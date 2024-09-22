@@ -8,15 +8,14 @@ from email import encoders
 from time import sleep
 from datetime import datetime
 import RPi.GPIO as GPIO
- # Replace this with the actual import if using a different DHT11 library
 import mysql.connector  # MySQL Connector for database interaction
-import dht11
+from Adafruit_DHT import DHT11, read_retry  # Import Adafruit library for DHT11
 
 # GPIO setup
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM)  # Use BCM numbering for GPIO pins
-GPIO.setup(17, GPIO.IN)  # Motion sensor connected to GPIO pin 17
-GPIO.setup(18, GPIO.OUT) # Buzzer connected to GPIO pin 18
+GPIO.setup(17, GPIO.IN)  # Motion sensor connected to GPIO pin 22
+GPIO.setup(18, GPIO.OUT)  # Buzzer connected to GPIO pin 18
 
 # Email parameters
 subject = 'Security Alert: Motion Detected!'
@@ -28,7 +27,7 @@ Regards,
 AS Tech-Workshop
 """
 SMTP_SERVER = 'smtp.gmail.com'
-SMTP_PORT = 587   
+SMTP_PORT = 587
 USERNAME = 'raspiberry019@gmail.com'
 PASSWORD = 'ljud ljwu kcof aele'  # Use the generated App Password
 RECIEVER_EMAIL = 'raspiberry019@gmail.com'
@@ -37,7 +36,7 @@ RECIEVER_EMAIL = 'raspiberry019@gmail.com'
 db_config = {
     'host': 'localhost',
     'user': 'admin',
-    'password': '1234',
+    'password': 'password',
     'database': 'PiCamera'
 }
 
@@ -45,8 +44,8 @@ db_config = {
 DHT_PIN = 4  # GPIO pin connected to the data pin of the DHT11
 
 # Temperature and humidity thresholds
-TEMP_THRESHOLD = 25  # Temperature threshold in Celsius
-HUMIDITY_THRESHOLD = 60  # Humidity threshold in percentage
+TEMP_THRESHOLD = 1  # Temperature threshold in Celsius
+HUMIDITY_THRESHOLD = 3  # Humidity threshold in percentage
 
 def connect_to_database():
     """Connect to the MySQL database."""
@@ -58,14 +57,15 @@ def connect_to_database():
         print(f"Error: {err}")
         return None
 
-def insert_record(file_name, file_type, motion_status):
+def insert_record(file_name, file_type, motion_status, temperature, humidity):
     """Inserts the record of the captured file into the database."""
     connection = connect_to_database()
     if connection:
         cursor = connection.cursor()
-        query = "INSERT INTO recordings (file_name, file_type, timestamp, motion_status) VALUES (%s, %s, %s, %s)"
+        query = """INSERT INTO recordings (file_name, file_type, timestamp, motion_status, temperature, humidity) 
+                   VALUES (%s, %s, %s, %s, %s, %s)"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        values = (file_name, file_type, timestamp, motion_status)
+        values = (file_name, file_type, timestamp, motion_status, temperature, humidity)
         try:
             cursor.execute(query, values)
             connection.commit()
@@ -111,13 +111,14 @@ def capture_image(motion_status):
     """Captures an image using the Raspberry Pi camera and sends it without saving locally."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     image_name = f'image_{timestamp}.jpg'
+    temperature, humidity = read_retry(DHT11, DHT_PIN)  # Read temperature and humidity
     try:
         # Capture image using libcamera-still and save to stdout
         result = subprocess.run(['libcamera-still', '-o', '-'], capture_output=True)
         if result.returncode == 0:
             print("Image captured")
             send_email(image_name, result.stdout, 'image')  # Send email with captured image
-            insert_record(image_name, 'image', motion_status)  # Insert record to database
+            insert_record(image_name, 'image', motion_status, temperature, humidity)  # Insert record to database
         else:
             print(f"Error capturing image: {result.stderr.decode()}")
     except subprocess.CalledProcessError as e:
@@ -128,6 +129,7 @@ def capture_video(motion_status):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     raw_video_name = f"video_{timestamp}.h264"
     mp4_video_name = f"video_{timestamp}.mp4"
+    temperature, humidity = read_retry(DHT11, DHT_PIN)  # Read temperature and humidity
     
     try:
         # Capture raw H264 video using libcamera-vid
@@ -150,7 +152,7 @@ def capture_video(motion_status):
                 send_email(mp4_video_name, video_data, 'video')
                 
                 # Insert record into the database
-                insert_record(mp4_video_name, 'video', motion_status)
+                insert_record(mp4_video_name, 'video', motion_status, temperature, humidity)
                 
             else:
                 print(f"Error converting video: {conversion_result.stderr}")
@@ -169,7 +171,7 @@ def capture_video(motion_status):
 
 def check_temperature_and_humidity():
     """Reads temperature and humidity from the DHT11 sensor and checks if they meet the thresholds."""
-    humidity, temperature = dht11.read(DHT_PIN)  # Adjust based on the actual library function
+    humidity, temperature = read_retry(DHT11, DHT_PIN)  # Use Adafruit library to read sensor
     if humidity is not None and temperature is not None:
         print(f"Temperature: {temperature:.1f}C, Humidity: {humidity:.1f}%")
         return temperature >= TEMP_THRESHOLD and humidity <= HUMIDITY_THRESHOLD
